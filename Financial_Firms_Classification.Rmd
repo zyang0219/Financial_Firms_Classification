@@ -1,0 +1,512 @@
+---
+date: "2024-05-02"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+### Kaggle Project: Risky Financial Firms Classification with AI/ML\
+**Kaggle Link**: https://www.kaggle.com/competitions/navigating-financial-instability/overview\
+
+
+### Content 
+1. Data Preprocessing 
+2. Feature Selection
+3. Model Selection and Training 
+4. Model Evaluation 
+
+### Tasks
+**Classification**: Objective is to classify whether a financial firm is "high-risk" or "low-risk" using binary variable 0 or 1 under "FinancialSector". 
+
+### 1. Data Preprocessing 
+#### a. Data Loading \
+Load the provided data and save it as df.
+```{r}
+# Install and load the arrow package
+# install.packages("arrow", repos = c("https://apache.r-universe.dev"))
+library(arrow)
+
+# Specify the path to your Parquet file
+parquet_file <- "/Users/duladula/Desktop/ISE 535/final project/Financial_Risk_Project_dataset(1).parquet"
+
+# 
+df = read_parquet(parquet_file)
+```
+
+#### b. Data Info \
+Provide basic information of the original dataset, so we can better understand it.
+```{r}
+# Check the dimensions of the data frame
+dim(df)
+```
+There are 415 rows and 74 columns.
+
+```{r}
+# Check whether the class is balanced
+table(df$FinancialSector)
+```
+The data is slightly imbalanced. 
+
+#### c. Data Cleaning \
+Clean the data and save as df1.Identify categorical and numerical variables.
+```{r}
+# Remove the columns that are irrelevant 
+columns_to_remove <- c("url", "securityType", "CIK", "name", "exchangeName",
+                       "call_transcript", "businessDescription","securityID", "fiscalDint")
+df1 = df[, !(names(df) %in% columns_to_remove)]
+```
+
+```{r}
+# We will drop FinancialRisk column 
+df1 = df1[, -which(names(df1) == "FinancialRisk")]
+```
+
+Notice: We can drop the "FinancialRisk" column since we are not focusing on predicting the scores but targeting the classification problem. The threshold for the "FinancialRisk" score is [0, 1]. We assume that when the score is 0, we have "0" indicating low risk in the "FinancialSector". When the score is greater than 0, we have "1" indicating high risk in the "FinancialSector". In this case, we will have a slightly imbalanced dataset, which is acceptable.
+
+```{r}
+# check one special categorical variable exchangeCountry
+table(df$exchangeCountry)
+
+# We will also drop exchangeCountry
+df1 = df1[, -which(names(df1) == "exchangeCountry")]
+```
+We can drop "exchangeCountry".As we can see the values are all the same for "exchangeCountry", thus it will not affect the classification result. 
+
+```{r}
+# Convert other categorical variables to factors
+df1$incorporationCountry = as.factor(df1$incorporationCountry)
+df1$exchangeID = as.factor(df1$exchangeID)
+```
+
+
+```{r}
+# Check the structure of the data frame
+str(df1)
+```
+We have 2 categrorical variables, 1 identifyID "ticker" and others are all numerical variables.
+
+#### d. Missing Values Imputation \
+Fill all the missing values for both categorical and numerical variables. 
+```{r}
+# Those are the number of total missing values for each 
+colSums(is.na(df1))
+```
+
+```{r}
+# Fill missing values with median for all numerical columns
+df1[, sapply(df1, is.numeric)] = apply(df1[, sapply(df1, is.numeric)], 2, function(x) ifelse(is.na(x), median(x, na.rm = TRUE), x))
+
+# Find the mode, which is N
+table(df1$exchangeID)
+
+# Impute missing values in the "exchangeID" column with "N"
+df1$exchangeID[is.na(df1$exchangeID)] = "N"
+
+```
+
+
+
+```{r}
+#Check for missing values again, we see that missing values are all imputed
+colSums(is.na(df1))
+```
+
+#### d.Normalization and Scaling \
+Normalize and scale all the numerical values from df1 and save as df2
+```{r}
+# Identify numerical columns
+numerical_columns = sapply(df1, is.numeric)
+categorical_columns = !sapply(df1, is.numeric)
+
+# Scale numerical columns
+scaled_numerical = as.data.frame(scale(df1[, numerical_columns]))
+
+# Combine scaled numerical columns with non-numerical columns
+df2 = cbind(df1[, categorical_columns, drop = FALSE], scaled_numerical)
+
+```
+
+
+#### e.Categorical Variables Encoding \
+Encode the categorical variables and save as df3.
+```{r}
+# check two categorical variable 
+table(df2$exchangeID)
+table(df2$incorporationCountry)
+```
+```{r}
+encoding_columns = c("exchangeID","incorporationCountry")
+# Perform dummy encoding
+encoded = model.matrix(~ . - 1, data = df2[, encoding_columns])
+
+# Combine encoded variables with original data
+df3 = cbind(df2[, !names(df2) %in% encoding_columns], encoded)
+```
+
+
+
+### 2. Feature Selection
+#### a. Correlation Analysis \
+Check correlation and draw a heatmap, then drop high correlation variables.
+```{r}
+# Calculate the correlation matrix
+cor_matrix = cor(df3[, sapply(df3, is.numeric)])
+
+# Visualize the correlation matrix using a heatmap
+library(corrplot)
+corrplot(cor_matrix, method = "color", tl.cex = 0.3,mar = c(0.3, 0.3, 0.3, 0.3))
+
+```
+
+```{r}
+# To us findCorrelation function, we need to install.packages("caret")
+library(caret)
+
+# Identify pairs with correlation > 0.7
+high_corr = findCorrelation(cor_matrix, cutoff = 0.7)
+
+# Get the variable names to drop
+vars_to_drop = names(df3)[high_corr]
+
+# Drop the identified variables 
+df4 = df3[, !names(df3) %in% vars_to_drop]
+
+```
+
+#### b. Multicollinearity Analysis \
+Show scatterplots to see whether the variables have linear relationship.
+
+```{r}
+# Calculate the correlation matrix using df4
+cor_matrix_new = cor(df4, use = "pairwise.complete.obs")
+
+# Find variable pairs with high correlation (e.g., absolute correlation > 0.7)
+high_corr_new = findCorrelation(cor_matrix_new, cutoff = 0.7)
+
+# Get the names of variables with high correlation
+high_corr_vars = colnames(df4)[high_corr_new]
+
+# Create the scatterplot matrix for variables with high correlation
+pairs(df4[, high_corr_vars], pch = 19, cex = 0.5, 
+      main = "Scatterplot Matrix (High Correlation)",
+      upper.panel = NULL,
+      lower.panel = panel.smooth,
+      diag.panel = NULL)
+```
+We can clearly see from the scatterplot that there is a obvious linear relationship between EBIT and Income before Depreciation, we choose to drop Income before Depreciation.Similarly, we drop Income Tax.There is a obvious linear relationship between TEV and close and a obvious linear relationship between close and VWAP, we choose to drop close.
+
+```{r}
+# We now drop those columns with strong linear relationship
+vars_to_drop_new = c("Income before Depreciation","Income Tax","close")
+# Drop the identified variables 
+data_final = df4[, !names(df4) %in% vars_to_drop_new]
+```
+
+### Model Seletion and Training
+#### a. Dataset Split\
+We split the 80% data into train set and 20% into test set. Then separate x and y for train set and test set. 
+```{r}
+
+set.seed(1)
+
+# n is the total rows 
+n = 415
+# set the train set to be 80%
+train = sample(1:n,0.8*n)
+
+#split data_final into xtrain and xtest
+xtrain = data_final[train,]
+xtest = data_final[-train,]
+
+```
+
+
+```{r}
+#define y to be the column of FinancialSector
+y = df$FinancialSector
+
+#split data_final into ytrain and ytest
+ytrain = y[train]
+ytest = y[-train]
+```
+
+```{r}
+# We find that one of the columns in x is constant, we want to remove it.
+# Identify the constant variable
+constant_var = names(xtrain)[39]
+
+# Remove the constant variable from the training and test data
+xtrain = xtrain[, -39]
+xtest = xtest[, -39]
+
+```
+
+
+#### b. KNN Model Fitting
+```{r}
+# to use knn, we need to install.library(class)
+library("class")
+
+# let us first predict xtest with k = 3 for knn model 
+yhat = knn(xtrain,xtest,ytrain,k=3)
+
+#confusion matrix
+table(yhat,ytest)
+
+# error rate
+aux = prop.table(table(yhat,ytest))
+1-sum(diag(aux))
+```
+We find the error rate is 0.08433735. Now we want to find the best k to minimize the error rate.
+
+```{r}
+
+# find best number neighbors k
+erate = rep(0,9)
+for (i in 1:9)
+{
+  yhat = knn(xtrain, xtest, ytrain, k = i)
+  aux = prop.table(table(yhat, ytest))
+  erate[i] = 1-sum(diag(aux))
+}
+
+# display all error rates
+erate
+```
+```{r}
+# visualize the results
+xaxis = 1:9
+plot(erate~xaxis, type="l", xlab = "N. of neighbors", ylab = "Error rate")
+```
+From the graph, we see that when k = 5 and k = 8, we get the smallest error rate. We will use k = 5 in the following prediction.
+
+```{r}
+# predict xtest with k = 5 for knn model 
+yhat_knn = knn(xtrain,xtest,ytrain,k=5)
+
+#confusion matrix
+table(yhat_knn,ytest)
+
+# error rate for knn
+aux_knn = prop.table(table(yhat_knn,ytest))
+1-sum(diag(aux_knn))
+
+```
+Error rate is 0.06024096 for KNN model prediction.
+
+```{r}
+#see confusion matrix for knn
+confusionmat_knn = as.matrix(table(ytest,yhat_knn))
+rowSums(confusionmat_knn)
+```
+
+```{r}
+#caluclate TPR and FPR for knn
+TPR_knn = confusionmat_knn[2,2]/rowSums(confusionmat_knn)[2]
+TPR_knn
+
+FPR_knn = confusionmat_knn[1,2]/rowSums(confusionmat_knn)[1]
+FPR_knn
+```
+TPR is 0.9259259  and FPR is 0.05357143  for KNN model prediction.
+
+#### c. Logistic Regression 
+```{r}
+# fit Logistic Regression Model
+l_model = glm(ytrain~.,data = xtrain,family ="binomial")
+
+# Predict with LR model
+probabs1 = predict(l_model,xtest,type = "response")
+
+# have a look of the probabilitis that the financial firm is risky, which is in class "1"
+head(probabs1)
+
+```
+
+```{r}
+# Predicted category is "1" if posterior probability > 0.3, n is the number of rows 415
+yhat = rep("0",n*0.2)
+yhat[probabs1>0.1] = "1"
+table("test" = ytest, "prediction" = yhat)
+```
+We will now draw the ROC curve to find a good threshold.
+
+```{r}
+# need to install.packages("ROCR"), to use performance function and prediction function
+library(ROCR)
+
+#Plot the ROC curve
+pred_ROCR = prediction(probabs1,ytest)
+roc_ROCR = performance(pred_ROCR,measure ="tpr",x.measure ="fpr")
+
+plot(roc_ROCR,col="red")
+```
+
+We can clearly see that when the threshold is 0.3, we get the best result. Thus, we will chose 0.3 as the threshold.
+
+```{r}
+# Now predit the test with threshold 0.05
+yhat_lg = rep("0",n*0.2)
+yhat_lg[probabs1>0.3] = "1"
+table("test" = ytest,"prediction" = yhat_lg)
+
+# error rate
+aux_lg = prop.table(table(yhat_lg,ytest))
+1-sum(diag(aux_lg))
+```
+The error rate is 0.08433735 for Logistic Regression prediction.
+
+```{r}
+#see confusion matrix
+confusionmat_lg = as.matrix(table(ytest,yhat_lg))
+rowSums(confusionmat_lg)
+
+```
+
+
+```{r}
+#calculate TPR and FPR
+TPR_lg = confusionmat_lg[2,2]/rowSums(confusionmat_lg)[2]
+TPR_lg
+
+FPR_lg = confusionmat_lg[1,2]/rowSums(confusionmat_lg)[1]
+FPR_lg
+```
+TPR is 0.8148148 and FPR is 0.03571429 for Logistic Regression model prediction.
+
+```{r}
+#AUC of Logistic Regression
+auc1 = performance(pred_ROCR,measure = "auc")
+auc1 = auc1@y.values[[1]]
+auc1
+```
+AUC for Logistic Regression is 0.9292328.
+
+#### d. Discriminant Analysis
+
+```{r}
+library(MASS)
+
+# Fit the LDA model
+model2 = lda(ytrain~.,data = xtrain)
+probabs = predict(model2,xtest)
+head(probabs$posterior,4)
+
+```
+
+```{r}
+#select posterior probabilities of category "1"
+probabs2 = probabs$posterior[,2]
+```
+
+```{r}
+#Draw ROC plot to identify a good threshold
+pred_ROCR2 = prediction(probabs2,ytest)
+roc_ROCR2 = performance(pred_ROCR2,measure ="tpr",x.measure ="fpr")
+
+plot(roc_ROCR2,col="blue")
+```
+We can see that when the threshold is around 0.24, we get the best result. Thus, we will chose 0.24 as the threshold.
+
+```{r}
+# Now predit the test with threshold 0.07
+yhat_da = rep("0",n*0.2)
+yhat_da[probabs2>0.24] = "1"
+table("test" = ytest,"prediction" = yhat_da)
+
+# error rate
+aux_da = prop.table(table(yhat_da,ytest))
+1-sum(diag(aux_da))
+```
+The error rate is 0.1084337 for Discriminant Analysis prediction.
+
+```{r}
+#see confusion matrix
+confusionmat_da = as.matrix(table(ytest,yhat_da))
+rowSums(confusionmat_da)
+
+```
+
+```{r}
+#calculate TPR and FPR
+TPR_da = confusionmat_da[2,2]/rowSums(confusionmat_da)[2]
+TPR_da
+
+FPR_da = confusionmat_da[1,2]/rowSums(confusionmat_da)[1]
+FPR_da
+```
+
+TPR is 0.962963  and FPR is 0.1428571 for Discriminant Analysis prediction.
+
+```{r}
+#AUC of Discriminant Analysis
+auc2 = performance(pred_ROCR2,measure = "auc")
+auc2 = auc2@y.values[[1]]
+auc2
+```
+AUC for Discriminant Analysis is 0.9689153.
+
+#### e. Naive Bayes
+```{r}
+#load library
+library(e1071)
+
+#fit the model 
+m1 = naiveBayes(ytrain ~ ., xtrain)
+
+#make the prediction
+yhat_nb = predict(m1,xtest)
+
+#See the table
+table("test" = ytest,"prediction" = yhat_nb)
+
+# error rate
+aux_nb = prop.table(table(yhat_nb,ytest))
+1-sum(diag(aux_nb))
+```
+The error rate is 0.313253 for Naive Bayes.
+
+```{r}
+#see confusion matrix
+confusionmat_nb = as.matrix(table(ytest,yhat_nb))
+rowSums(confusionmat_nb)
+
+```
+
+
+```{r}
+#calculate TPR and FPR
+TPR_nb = confusionmat_nb[2,2]/rowSums(confusionmat_nb)[2]
+TPR_nb
+
+FPR_nb = confusionmat_nb[1,2]/rowSums(confusionmat_nb)[1]
+FPR_nb
+```
+TPR is 1  and FPR is 0.4642857 for Naive Bayes prediction.
+
+#### Model Evaluation\
+Return a table with each model's error rates.
+```{r}
+Model = c("KNN", "Logistic Regression", "Discrimination Analysis", "Naive Bayes")
+ErrorRate = c("0.06024096", "0.08433735", "0.1084337", "0.313253")
+
+pred_summary = data.frame(Model, ErrorRate)
+pred_summary
+```
+In summary, both KNN (with k=5 or 8) and Logistic Regression (threshold =  0.3) perform well for prediction, with error rates below 0.1. However, the choice of the best model depends on various factors beyond just the error rate. These factors include interpretability, computational complexity, scalability, and model assumptions. Logistic Regression provides interpretable coefficients and scales well to large datasets, while KNN is non-parametric and may be computationally expensive for large datasets. Overall, they are both great prediction methods for this dataset comparing to Discrimination Anlysis and Naive Bayes.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
